@@ -4,6 +4,16 @@ import numpy as np
 import mediapipe as mp
 from collections import deque
 
+def check_camera_access():
+    """Check if camera is accessible and return available camera indices"""
+    available_cameras = []
+    for i in range(3):  # Check first 3 camera indices
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            available_cameras.append(i)
+            cap.release()
+    return available_cameras
+
 def main():
     st.set_page_config(page_title="Air Canvas", page_icon="✏️", layout="wide")
     
@@ -30,6 +40,34 @@ def main():
     - Use the color buttons to change colors
     """)
 
+    # Check camera access
+    available_cameras = check_camera_access()
+    
+    if not available_cameras:
+        st.error("❌ No cameras detected! Please check your webcam connection and permissions.")
+        st.info("Try these troubleshooting steps:")
+        st.markdown("""
+        1. Make sure a webcam is connected to your device
+        2. Grant camera permissions to your browser
+        3. If using Linux, run these commands:
+           ```bash
+           sudo apt-get install v4l-utils
+           sudo modprobe uvcvideo
+           ls -l /dev/video*
+           ```
+        4. Try restarting your computer
+        """)
+        return
+
+    # Add camera selection if multiple cameras are available
+    camera_index = 0
+    if len(available_cameras) > 1:
+        camera_index = st.sidebar.selectbox(
+            "Select Camera",
+            available_cameras,
+            format_func=lambda x: f"Camera {x}"
+        )
+
     # Sidebar controls
     st.sidebar.title("Controls")
     start_button = st.sidebar.button("Start Drawing")
@@ -41,12 +79,16 @@ def main():
 
     if start_button:
         st.session_state.stop_drawing = False
-        run_air_canvas()
+        try:
+            run_air_canvas(camera_index)
+        except Exception as e:
+            st.error(f"Error accessing camera: {str(e)}")
+            st.info("Please check your camera connections and permissions.")
     
     if stop_button:
         st.session_state.stop_drawing = True
 
-def run_air_canvas():
+def run_air_canvas(camera_index=0):
     # Initialize MediaPipe
     mpHands = mp.solutions.hands
     hands = mpHands.Hands(max_num_hands=1, min_detection_confidence=0.7)
@@ -83,37 +125,54 @@ def run_air_canvas():
         st.markdown("### Drawing Canvas")
         drawing_placeholder = st.empty()
 
-    # Initialize webcam
-    cap = cv2.VideoCapture(0)
+    # Initialize webcam with error handling
+    cap = cv2.VideoCapture(camera_index)
+    
+    if not cap.isOpened():
+        st.error(f"Failed to open camera {camera_index}")
+        return
+    
+    # Add camera properties for better compatibility
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    
+    # Setup placeholders
+    status_placeholder = st.empty()
 
-    while not st.session_state.stop_drawing:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while not st.session_state.stop_drawing:
+            ret, frame = cap.read()
+            if not ret:
+                status_placeholder.error("Failed to get frame from camera")
+                break
 
-        frame = cv2.flip(frame, 1)
-        framergb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.flip(frame, 1)
+            framergb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Add UI elements to frame
-        frame = draw_ui_elements(frame)
-        
-        # Process hand landmarks
-        result = hands.process(framergb)
-        
-        if result.multi_hand_landmarks:
-            landmarks = process_hand_landmarks(result, frame, mpDraw, mpHands)
-            process_drawing(landmarks, frame, paintWindow, bpoints, gpoints, rpoints, ypoints,
-                          blue_index, green_index, red_index, yellow_index, colors, colorIndex)
+            # Add UI elements to frame
+            frame = draw_ui_elements(frame)
+            
+            # Process hand landmarks
+            result = hands.process(framergb)
+            
+            if result.multi_hand_landmarks:
+                landmarks = process_hand_landmarks(result, frame, mpDraw, mpHands)
+                process_drawing(landmarks, frame, paintWindow, bpoints, gpoints, rpoints, ypoints,
+                              blue_index, green_index, red_index, yellow_index, colors, colorIndex)
 
-        # Draw lines
-        points = [bpoints, gpoints, rpoints, ypoints]
-        draw_lines(points, frame, paintWindow, colors)
+            # Draw lines
+            points = [bpoints, gpoints, rpoints, ypoints]
+            draw_lines(points, frame, paintWindow, colors)
 
-        # Display the frames
-        camera_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        drawing_placeholder.image(cv2.cvtColor(paintWindow, cv2.COLOR_BGR2RGB))
+            # Display the frames
+            camera_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            drawing_placeholder.image(cv2.cvtColor(paintWindow, cv2.COLOR_BGR2RGB))
 
-    cap.release()
+    except Exception as e:
+        st.error(f"Error during camera capture: {str(e)}")
+    finally:
+        cap.release()
 
 def draw_ui_elements(frame):
     # Draw rectangles and text for UI
