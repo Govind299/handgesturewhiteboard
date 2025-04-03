@@ -31,125 +31,75 @@ def main():
     """)
 
     # Initialize session state
-    if 'camera_started' not in st.session_state:
-        st.session_state.camera_started = False
     if 'stop_drawing' not in st.session_state:
         st.session_state.stop_drawing = False
+    if 'canvas' not in st.session_state:
+        st.session_state.canvas = np.zeros((471,636,3)) + 255
 
-    # Sidebar controls
-    st.sidebar.title("Controls")
-    
-    # Camera permission request
-    st.sidebar.markdown("""
-    ### Camera Access
-    This app requires camera access to work. Please allow camera access when prompted by your browser.
-    """)
-    
-    start_button = st.sidebar.button(
-        "Start Camera & Drawing",
-        help="Click to start the camera and drawing canvas"
-    )
-    
-    stop_button = st.sidebar.button(
-        "Stop",
-        help="Click to stop the camera and drawing"
-    )
-
-    # Two-column layout for the video feed and canvas
+    # Two-column layout
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("### Camera Feed")
-        camera_placeholder = st.empty()
+        # Using Streamlit's camera input
+        camera_input = st.camera_input("Camera", key="camera")
     
     with col2:
         st.markdown("### Drawing Canvas")
-        drawing_placeholder = st.empty()
-
-    if start_button:
-        st.session_state.camera_started = True
-        st.session_state.stop_drawing = False
-        try:
-            run_air_canvas(camera_placeholder, drawing_placeholder)
-        except Exception as e:
-            st.error("❌ Camera access failed! Please make sure to:")
-            st.markdown("""
-            1. Allow camera access in your browser when prompted
-            2. Make sure no other application is using the camera
-            3. Refresh the page and try again
-            """)
-            st.error(f"Error details: {str(e)}")
-    
-    if stop_button:
-        st.session_state.stop_drawing = True
-        st.session_state.camera_started = False
-
-def run_air_canvas(camera_placeholder, drawing_placeholder):
+        canvas_placeholder = st.empty()
+        
     # Initialize MediaPipe
     mpHands = mp.solutions.hands
     hands = mpHands.Hands(max_num_hands=1, min_detection_confidence=0.7)
     mpDraw = mp.solutions.drawing_utils
 
-    # Initialize color points
+    # Initialize drawing variables
     bpoints = [deque(maxlen=1024)]
     gpoints = [deque(maxlen=1024)]
     rpoints = [deque(maxlen=1024)]
     ypoints = [deque(maxlen=1024)]
-
-    # Color indexes and colors
     blue_index = green_index = red_index = yellow_index = 0
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 255, 255)]
     colorIndex = 0
 
-    # Create canvas
-    paintWindow = np.zeros((471,636,3)) + 255
-    
-    # Initialize webcam
-    cap = cv2.VideoCapture(0)
-    
-    # Set camera properties
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    
-    if not cap.isOpened():
-        raise RuntimeError("Could not start camera. Please check permissions and try again.")
+    if camera_input is not None:
+        # Convert the camera input to numpy array
+        frame_bytes = camera_input.getvalue()
+        frame = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
+        
+        # Process the frame
+        frame = cv2.flip(frame, 1)
+        framergb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Add UI elements
+        frame = draw_ui_elements(frame)
+        
+        # Process hand landmarks
+        result = hands.process(framergb)
+        
+        if result.multi_hand_landmarks:
+            landmarks = process_hand_landmarks(result, frame, mpDraw, mpHands)
+            if landmarks:
+                process_drawing(landmarks, frame, st.session_state.canvas, bpoints, gpoints, 
+                              rpoints, ypoints, blue_index, green_index, red_index, 
+                              yellow_index, colors, colorIndex)
 
-    status_placeholder = st.empty()
-    
-    try:
-        while not st.session_state.stop_drawing:
-            ret, frame = cap.read()
-            if not ret:
-                status_placeholder.error("Failed to get frame from camera")
-                break
+        # Draw lines
+        points = [bpoints, gpoints, rpoints, ypoints]
+        draw_lines(points, frame, st.session_state.canvas, colors)
 
-            frame = cv2.flip(frame, 1)
-            framergb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Display the processed frame and canvas
+        col1.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        canvas_placeholder.image(cv2.cvtColor(st.session_state.canvas, cv2.COLOR_BGR2RGB))
 
-            # Add UI elements to frame
-            frame = draw_ui_elements(frame)
-            
-            # Process hand landmarks
-            result = hands.process(framergb)
-            
-            if result.multi_hand_landmarks:
-                landmarks = process_hand_landmarks(result, frame, mpDraw, mpHands)
-                if landmarks:
-                    process_drawing(landmarks, frame, paintWindow, bpoints, gpoints, rpoints, ypoints,
-                                blue_index, green_index, red_index, yellow_index, colors, colorIndex)
-
-            # Draw lines
-            points = [bpoints, gpoints, rpoints, ypoints]
-            draw_lines(points, frame, paintWindow, colors)
-
-            # Display the frames
-            camera_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            drawing_placeholder.image(cv2.cvtColor(paintWindow, cv2.COLOR_BGR2RGB))
-
-    except Exception as e:
-        st.error(f"Error during camera capture: {str(e)}")
-    finally:
-        cap.release()
+    # Clear canvas button
+    if st.sidebar.button("Clear Canvas"):
+        st.session_state.canvas = np.zeros((471,636,3)) + 255
+        bpoints = [deque(maxlen=1024)]
+        gpoints = [deque(maxlen=1024)]
+        rpoints = [deque(maxlen=1024)]
+        ypoints = [deque(maxlen=1024)]
+        blue_index = green_index = red_index = yellow_index = 0
 
 def draw_ui_elements(frame):
     # Draw rectangles and text for UI
@@ -177,7 +127,7 @@ def process_hand_landmarks(result, frame, mpDraw, mpHands):
         mpDraw.draw_landmarks(frame, handslms, mpHands.HAND_CONNECTIONS)
     return landmarks
 
-def process_drawing(landmarks, frame, paintWindow, bpoints, gpoints, rpoints, ypoints,
+def process_drawing(landmarks, frame, canvas, bpoints, gpoints, rpoints, ypoints,
                    blue_index, green_index, red_index, yellow_index, colors, colorIndex):
     fore_finger = (landmarks[8][0], landmarks[8][1])
     thumb = (landmarks[4][0], landmarks[4][1])
@@ -193,14 +143,14 @@ def process_drawing(landmarks, frame, paintWindow, bpoints, gpoints, rpoints, yp
         red_index += 1
         yellow_index += 1
 
-def draw_lines(points, frame, paintWindow, colors):
+def draw_lines(points, frame, canvas, colors):
     for i in range(len(points)):
         for j in range(len(points[i])):
             for k in range(1, len(points[i][j])):
                 if points[i][j][k - 1] is None or points[i][j][k] is None:
                     continue
                 cv2.line(frame, points[i][j][k - 1], points[i][j][k], colors[i], 2)
-                cv2.line(paintWindow, points[i][j][k - 1], points[i][j][k], colors[i], 2)
+                cv2.line(canvas, points[i][j][k - 1], points[i][j][k], colors[i], 2)
 
 if __name__ == "__main__":
     main() 
